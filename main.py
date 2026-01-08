@@ -1,154 +1,88 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-import zipfile
-import subprocess
-import uuid
-import os
-
-# =====================
-# CONFIG
-# =====================
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")
-CFR_JAR = os.path.join(BASE_DIR, "cfr-0.152.jar")
-
-os.makedirs(SESSIONS_DIR, exist_ok=True)
+from fastapi.responses import JSONResponse
+import zipfile, os, uuid, subprocess, shutil
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# =====================
-# UTILS
-# =====================
+TEMP = "temp"
+VINE = "vineflower-1.11.2.jar"   # o fernflower.jar
+CFR = "cfr-0.152.jar"
 
-def build_tree(files):
-    tree = {}
-    for path in files:
-        cur = tree
-        parts = path.split("/")
-        for p in parts[:-1]:
-            cur = cur.setdefault(p, {})
-        cur[parts[-1]] = None
-    return tree
+TEXT_EXT = (
+    ".yml", ".yaml", ".txt", ".json",
+    ".xml", ".properties", ".mf"
+)
 
-
-def read_text_file(path):
-    with open(path, "rb") as f:
-        data = f.read()
-    return data.decode("utf-8", errors="replace")
-
-
-def decompile_class(class_path, jar_path):
-    """
-    CFR REAL:
-    - usa el JAR como classpath
-    - stdout forzado
-    - nunca devuelve vacío
-    """
-    try:
-        result = subprocess.run(
-            [
-                "java", "-jar", CFR_JAR,
-                class_path,
-                "--extraclasspath", jar_path,
-                "--stdout", "true",
-                "--recover", "true",
-                "--silent", "false"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=60
-        )
-
-        if result.stdout.strip():
-            return result.stdout
-
-        if result.stderr.strip():
-            return "// CFR ERROR\n" + result.stderr
-
-        return "// CFR no devolvió salida.\n// Clase ofuscada o dependencias faltantes."
-
-    except subprocess.TimeoutExpired:
-        return "// ERROR: CFR tardó demasiado"
-    except Exception as e:
-        return f"// ERROR EJECUTANDO CFR\n{e}"
-
-
-# =====================
-# ROUTES
-# =====================
-
-@app.get("/")
-def index():
-    return FileResponse("static/index.html")
-
+os.makedirs(TEMP, exist_ok=True)
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     if not file.filename.endswith(".jar"):
-        raise HTTPException(status_code=400, detail="Solo .jar")
+        raise HTTPException(400, "Solo archivos .jar")
 
-    session_id = str(uuid.uuid4())
-    session_dir = os.path.join(SESSIONS_DIR, session_id)
-    os.makedirs(session_dir, exist_ok=True)
+    uid = str(uuid.uuid4())
+    base = os.path.join(TEMP, uid)
 
-    jar_path = os.path.join(session_dir, file.filename)
+    jar_path = base + ".jar"
+    extract_dir = base + "_extract"
+    java_dir = base + "_java"
+
+    os.makedirs(extract_dir, exist_ok=True)
+    os.makedirs(java_dir, exist_ok=True)
 
     with open(jar_path, "wb") as f:
         f.write(await file.read())
 
+    # Extraer JAR
     with zipfile.ZipFile(jar_path, "r") as jar:
-        jar.extractall(session_dir)
-        files = [f for f in jar.namelist() if not f.endswith("/")]
+        jar.extractall(extract_dir)
 
-    return {
-        "session_id": session_id,
-        "tree": build_tree(files)
-    }
-
-
-@app.get("/file/{session_id}/{path:path}")
-def get_file(session_id: str, path: str):
-    base = os.path.join(SESSIONS_DIR, session_id)
-    real_path = os.path.join(base, path)
-
-    if not os.path.isfile(real_path):
-        return JSONResponse(
-            {"content": "// Archivo no encontrado", "type": "text", "editable": False},
-            status_code=404
-        )
-
-    # localizar el JAR original
-    jar_file = next(
-        (f for f in os.listdir(base) if f.endswith(".jar")),
-        None
+    subprocess.run(
+        ["java", "-jar", VINE, extract_dir, java_dir],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
     )
-    jar_path = os.path.join(base, jar_file) if jar_file else None
 
-    # ===== .CLASS =====
-    if path.endswith(".class"):
-        if not jar_path:
-            return {
-                "content": "// JAR original no encontrado",
-                "type": "java",
-                "editable": False
-            }
+    results = {}
 
-        java_code = decompile_class(real_path, jar_path)
-        return {
-            "content": java_code,
-            "type": "java",
-            "editable": False
-        }
+    for root, _, files in os.walk(java_dir):
+        for name in files:
+            if name.endswith(".java"):
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, java_dir)
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    results[rel] = f.read()
 
-    # ===== TEXTO (.yml, .java, etc) =====
-    content = read_text_file(real_path)
+    for root, _, files in os.walk(extract_dir):
+        for name in files:
+            if name.endswith(".class"):
+                rel = os.path.relpath(os.path.join(root, name), extract_dir)
+                java_name = rel.replace(".class", ".java")
 
-    return {
-        "content": content,
-        "type": "yaml" if path.endswith((".yml", ".yaml")) else "text",
-        "editable": True
-    }
+                if java_name in results:
+                    continue
+
+                try:
+                    out = subprocess.run(
+                        ["java", "-jar", CFR, os.path.join(root, name)],
+                        capture_output=True,
+                        text=True,
+                        timeout=20
+                    )
+                    if out.stdout.strip():
+                        results[java_name] = out.stdout
+                except:
+                    pass
+
+    for root, _, files in os.walk(extract_dir):
+        for name in files:
+            if name.lower().endswith(TEXT_EXT):
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, extract_dir)
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    results[rel] = f.read()
+
+    return JSONResponse({
+        "files": results,
+        "total": len(results)
+    })
