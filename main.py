@@ -24,7 +24,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 sessions: Dict[str, str] = {}
 
-CFR_JAR = "cfr-0.152.jar"  # Nombre del JAR que subiste
+# Nombre del CFR que subiste (recomiendo descargar la última y llamarla cfr.jar)
+CFR_JAR = "cfr-0.152.jar"
 
 def build_file_tree(directory: str) -> Dict:
     tree = {}
@@ -88,44 +89,60 @@ async def get_file(session_id: str, path: str):
 
     ext = os.path.splitext(path)[1].lower()
 
-    # Archivos de texto
+    # Archivos de texto (yml, yaml, txt, etc.)
     if ext in {'.yml', '.yaml', '.txt', '.json', '.properties', '.cfg', '.conf', '.md'}:
         try:
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             return {"content": content, "type": "yaml" if ext in {'.yml', '.yaml'} else "text", "editable": True}
         except Exception as e:
-            return {"content": f"// Error leyendo archivo: {str(e)}", "type": "text", "editable": False}
+            return {"content": f"// Error leyendo archivo:\n// {str(e)}", "type": "text", "editable": False}
 
-    # .class
+    # .class → DECOMPILACIÓN CORREGIDA
     elif ext == '.class':
         decomp_dir = os.path.join(sessions[session_id], "decompiled")
         os.makedirs(decomp_dir, exist_ok=True)
 
         java_rel_path = os.path.splitext(path)[0] + '.java'
         java_full_path = safe_join(decomp_dir, java_rel_path)
-        os.makedirs(os.path.dirname(java_full_path), exist_ok=True)
+        os.makedirs(os.path.dirname(java_full_path), exist_ok=True)  # Crea carpetas del paquete
 
         try:
+            # Comando CFR optimizado para que funcione con paquetes y no falle silenciosamente
+            cmd = [
+                "java", "-jar", CFR_JAR, full_path,
+                "--outputdir", decomp_dir,
+                "--extraclasspath", "",      # Fuerza análisis completo
+                "--decodeenumswitch", "true",
+                "--sugarenums", "true",
+                "--recover", "true",
+                "--silent", "false"
+            ]
+
             result = subprocess.run(
-                ["java", "-jar", CFR_JAR, full_path, "--outputdir", decomp_dir],
-                capture_output=True, text=True, timeout=60
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=90  # Más tiempo para .class grandes
             )
 
             if result.returncode != 0:
-                raise Exception(f"CFR error: {result.stderr.strip() or result.stdout.strip()}")
+                raise Exception(f"CFR falló (código {result.returncode}):\n{result.stderr.strip()}")
 
             if not os.path.exists(java_full_path):
-                raise Exception(f"No se generó el archivo Java. CFR output: {result.stdout.strip() or result.stderr.strip()}")
+                raise Exception(f"No se generó el archivo .java.\nCFR output:\n{result.stdout.strip() or result.stderr.strip() or 'Sin salida'}")
 
             with open(java_full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             return {"content": content, "type": "java", "editable": True}
 
+        except subprocess.TimeoutExpired:
+            fallback = "// ERROR: Decompilación tardó demasiado (>90s)\n// El .class es muy grande o complejo."
         except Exception as e:
-            fallback = f"// ERROR AL DESCOMPILAR {path}\n// {str(e)}\n// Posibles causas: clase ofuscada, versión incompatible o error interno."
-            return {"content": fallback, "type": "java", "editable": True}
+            fallback = f"// ERROR AL DESCOMPILAR {path}\n// {str(e)}\n// CFR output: {result.stdout if 'result' in locals() else ''}"
+
+        return {"content": fallback, "type": "java", "editable": True}
 
     else:
         return {"content": "[Archivo binario - no editable]", "type": "text", "editable": False}
@@ -166,12 +183,12 @@ async def save_file(session_id: str, path: str, request: Request):
                 shutil.move(new_class_path, full_path)
                 return {"message": "Compilado y guardado correctamente"}
             else:
-                raise Exception("No se generó el .class")
+                raise Exception("No se generó el .class compilado")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error compilando: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error al compilar: {str(e)}")
 
     else:
-        raise HTTPException(status_code=400, detail="Tipo no editable")
+        raise HTTPException(status_code=400, detail="Tipo de archivo no editable")
 
 @app.get("/download/{session_id}")
 async def download_modified(session_id: str):
