@@ -84,64 +84,67 @@ async def get_file(session_id: str, path: str):
     if session_id not in sessions:
         raise HTTPException(404, "Sesión inválida")
 
-    extracted = os.path.join(sessions[session_id], "extracted")
+    extracted_dir = os.path.join(sessions[session_id], "extracted")
 
-    try:
-        full = safe_join(extracted, path)
-    except:
-        raise HTTPException(400, "Ruta inválida")
+    # 🔥 RUTA DIRECTA, SIN safe_join
+    full_path = os.path.abspath(os.path.join(extracted_dir, path))
 
-    if not os.path.exists(full):
-        raise HTTPException(404, "Archivo no existe")
+    print("DEBUG PATH:", full_path)
+
+    if not full_path.startswith(os.path.abspath(extracted_dir)):
+        raise HTTPException(400, "Ruta fuera del directorio")
+
+    if not os.path.exists(full_path):
+        raise HTTPException(404, "Archivo no encontrado")
 
     ext = os.path.splitext(path)[1].lower()
 
-    # ---------- ARCHIVOS TEXTO ----------
+    # ---------- TEXTO ----------
     if ext in {".yml", ".yaml", ".txt", ".json", ".properties", ".cfg", ".conf", ".md"}:
-        try:
-            with open(full, "rb") as f:
-                content = f.read().decode("utf-8", errors="replace")
-            return {"content": content, "type": "yaml", "editable": True}
-        except Exception as e:
-            return {"content": f"# ERROR\n{e}", "type": "text", "editable": False}
+        with open(full_path, "rb") as f:
+            content = f.read().decode("utf-8", errors="replace")
 
-    # ---------- DECOMPILAR .CLASS ----------
+        return {
+            "content": content,
+            "type": "yaml",
+            "editable": True
+        }
+
+    # ---------- .CLASS ----------
     if ext == ".class":
         decomp_dir = os.path.join(sessions[session_id], "decompiled")
         os.makedirs(decomp_dir, exist_ok=True)
 
-        cmd = ["java", "-jar", CFR_JAR, full, "--outputdir", decomp_dir]
+        cmd = ["java", "-jar", CFR_JAR, full_path, "--outputdir", decomp_dir]
+        subprocess.run(cmd, capture_output=True)
 
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        except Exception as e:
-            return {
-                "content": f"// ERROR ejecutando CFR\n// {e}",
-                "type": "java",
-                "editable": False
-            }
-
-        # 🔍 BUSCAR EL .JAVA REAL GENERADO
         class_name = os.path.basename(path).replace(".class", ".java")
-        found_java = None
+        java_file = None
 
         for root, _, files in os.walk(decomp_dir):
-            for f in files:
-                if f == class_name:
-                    found_java = os.path.join(root, f)
-                    break
+            if class_name in files:
+                java_file = os.path.join(root, class_name)
+                break
 
-        if not found_java:
+        if not java_file:
             return {
-                "content": "// ERROR: CFR no generó el .java",
+                "content": "// CFR no pudo generar el .java",
                 "type": "java",
                 "editable": False
             }
 
-        with open(found_java, "r", encoding="utf-8", errors="replace") as f:
-            return {"content": f.read(), "type": "java", "editable": True}
+        with open(java_file, "r", encoding="utf-8", errors="replace") as f:
+            return {
+                "content": f.read(),
+                "type": "java",
+                "editable": True
+            }
 
-    return {"content": "[Archivo binario]", "type": "text", "editable": False}
+    return {
+        "content": "[Archivo binario]",
+        "type": "text",
+        "editable": False
+    }
 
 
 @app.post("/save/{session_id}/{path:path}")
