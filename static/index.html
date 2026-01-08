@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>JAR Editor DEBUG</title>
+<title>JAR Viewer</title>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
@@ -14,22 +14,57 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
 
 <style>
-body { margin:0; height:100vh; display:flex; font-family:Arial }
-#tree { width:30%; border-right:1px solid #aaa; overflow:auto; padding:10px }
-#right { width:70%; display:flex; flex-direction:column }
-#editor { flex:1 }
-#top { padding:10px; border-bottom:1px solid #aaa }
+body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    font-family: Arial, sans-serif;
+}
+
+/* Árbol */
+#tree {
+    width: 30%;
+    border-right: 2px solid #ccc;
+    overflow: auto;
+    padding: 10px;
+    background: #fafafa;
+}
+
+/* Zona de código */
+#code-zone {
+    width: 70%;
+    display: flex;
+    flex-direction: column;
+}
+
+#top-bar {
+    padding: 10px;
+    border-bottom: 2px solid #ccc;
+    background: #f0f0f0;
+}
+
+#file-name {
+    font-weight: bold;
+}
+
+#editor {
+    flex: 1;
+}
 </style>
 </head>
 
 <body>
 
-<div id="tree">Subí un JAR</div>
+<!-- PANEL IZQUIERDO -->
+<div id="tree">
+    <p><b>Subí un archivo .jar</b></p>
+</div>
 
-<div id="right">
-    <div id="top">
+<!-- PANEL DERECHO -->
+<div id="code-zone">
+    <div id="top-bar">
         <input type="file" id="upload" accept=".jar">
-        <span id="status"></span>
+        <span id="file-name">Ningún archivo abierto</span>
     </div>
     <div id="editor"></div>
 </div>
@@ -37,79 +72,90 @@ body { margin:0; height:100vh; display:flex; font-family:Arial }
 <script>
 let sessionId = null;
 
+// Editor FIJO (zona propia)
 const editor = CodeMirror(document.getElementById("editor"), {
     lineNumbers: true,
     readOnly: true,
     mode: "text"
 });
 
-function log(msg) {
-    console.log(msg);
-    document.getElementById("status").textContent = msg;
-}
-
-// convierte árbol backend → jsTree
-function build(tree, base="") {
-    return Object.entries(tree).map(([name, val]) => {
-        const full = base ? base + "/" + name : name;
+// Convierte árbol backend a jsTree
+function toJsTree(tree, base = "") {
+    return Object.entries(tree).map(([name, value]) => {
+        const fullPath = base ? base + "/" + name : name;
         return {
             text: name,
-            id: full,
-            children: val ? build(val, full) : false
+            id: fullPath,
+            children: value ? toJsTree(value, fullPath) : false
         };
     });
 }
 
+// Cargar árbol
 function loadTree(tree) {
     $("#tree").jstree("destroy");
+
     $("#tree").jstree({
-        core: { data: build(tree) }
+        core: { data: toJsTree(tree) }
     });
 
-    // 🔥 FORZADO: click SIMPLE
+    // 🔥 EVENTO SIMPLE, SIN BUGS
     $("#tree").on("click", ".jstree-anchor", async function () {
-        const node = $("#tree").jstree(true).get_node(this);
+        const instance = $("#tree").jstree(true);
+        const node = instance.get_node(this);
+
         if (!node || node.children !== false) return;
 
-        const path = node.id;
-        log("Cargando: " + path);
+        document.getElementById("file-name").textContent = node.id;
 
         try {
-            const res = await fetch(`/file/${sessionId}/${path}`);
+            const res = await fetch(`/file/${sessionId}/${node.id}`);
             const data = await res.json();
 
-            console.log("RESPUESTA BACKEND:", data);
+            // FORZAR escritura en el panel
+            if (!data || data.content === undefined) {
+                editor.setValue("❌ El servidor no devolvió contenido");
+                return;
+            }
 
-            editor.setValue(data.content ?? "<<< SIN CONTENT >>>");
-            editor.setOption("mode", data.type === "java" ? "text/x-java" : "yaml");
+            editor.setValue(
+                data.content === ""
+                ? "⚠️ Archivo vacío o no legible"
+                : data.content
+            );
+
+            editor.setOption(
+                "mode",
+                data.type === "java" ? "text/x-java" : "yaml"
+            );
             editor.setOption("readOnly", !data.editable);
 
-            log("OK: " + path);
-
         } catch (e) {
-            editor.setValue("ERROR\n" + e);
-            log("ERROR cargando archivo");
+            editor.setValue("❌ ERROR cargando archivo\n" + e);
         }
     });
 }
 
-// subir jar
-document.getElementById("upload").addEventListener("change", async e => {
-    const f = e.target.files[0];
-    if (!f) return;
+// Subir JAR
+document.getElementById("upload").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-    log("Subiendo JAR...");
+    editor.setValue("Cargando JAR...");
+    document.getElementById("file-name").textContent = "";
 
-    const fd = new FormData();
-    fd.append("file", f);
+    const form = new FormData();
+    form.append("file", file);
 
-    const res = await fetch("/upload", { method:"POST", body:fd });
+    const res = await fetch("/upload", {
+        method: "POST",
+        body: form
+    });
+
     const data = await res.json();
-
     sessionId = data.session_id;
-    loadTree(data.tree);
 
-    log("JAR cargado");
+    loadTree(data.tree);
 });
 </script>
 
