@@ -2,9 +2,15 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>JAR Viewer SIMPLE</title>
+<title>JAR Viewer / Decompiler</title>
 
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/java/java.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
@@ -12,104 +18,53 @@
 <style>
 body {
     margin: 0;
-    height: 100vh;
     display: flex;
-    font-family: Arial, sans-serif;
+    height: 100vh;
+    font-family: Arial;
 }
-#files {
+#tree {
     width: 30%;
-    border-right: 2px solid #ccc;
+    border-right: 1px solid #ccc;
     overflow: auto;
     padding: 10px;
 }
-#files ul {
-    list-style: none;
-    padding-left: 15px;
-}
-#files li {
-    cursor: pointer;
-    padding: 2px 0;
-}
-#files li:hover {
-    background: #eee;
-}
-#right {
-    width: 70%;
-    display: flex;
-    flex-direction: column;
-}
-#top {
-    padding: 10px;
-    border-bottom: 2px solid #ccc;
-}
 #editor {
-    flex: 1;
+    width: 70%;
+    height: 100vh;
 }
 </style>
 </head>
 
 <body>
 
-<div id="files">
-    <input type="file" id="upload" accept=".jar">
-    <div id="tree"></div>
-</div>
-
-<div id="right">
-    <div id="top"><b id="current">Ningún archivo abierto</b></div>
-    <div id="editor"></div>
-</div>
+<div id="tree"></div>
+<textarea id="editor"></textarea>
 
 <script>
 let sessionId = null;
 
-const editor = CodeMirror(document.getElementById("editor"), {
-    lineNumbers: true,
-    readOnly: true,
-    mode: "text"
-});
-
-function renderTree(tree, base = "") {
-    const ul = document.createElement("ul");
-
-    for (const name in tree) {
-        const li = document.createElement("li");
-        const fullPath = base ? base + "/" + name : name;
-
-        li.textContent = name;
-
-        if (tree[name] === null) {
-            // ARCHIVO
-            li.onclick = async () => {
-                console.log("CLICK:", fullPath);
-                document.getElementById("current").textContent = fullPath;
-
-                const res = await fetch(`/file/${sessionId}/${fullPath}`);
-                const data = await res.json();
-
-                console.log("RESPUESTA:", data);
-
-                editor.setValue(data.content || "<<< VACÍO >>>");
-                editor.setOption(
-                    "mode",
-                    data.type === "java" ? "text/x-java" : "yaml"
-                );
-                editor.setOption("readOnly", !data.editable);
-            };
-        } else {
-            // CARPETA
-            li.style.fontWeight = "bold";
-            li.appendChild(renderTree(tree[name], fullPath));
-        }
-
-        ul.appendChild(li);
+const editor = CodeMirror.fromTextArea(
+    document.getElementById("editor"),
+    {
+        lineNumbers: true,
+        readOnly: true,
+        mode: "text"
     }
+);
 
-    return ul;
-}
+// =========================
+// SUBIR JAR
+// =========================
+const input = document.createElement("input");
+input.type = "file";
+input.accept = ".jar";
+input.style.display = "none";
+document.body.appendChild(input);
 
-document.getElementById("upload").addEventListener("change", async e => {
-    const file = e.target.files[0];
+document.body.addEventListener("dblclick", () => input.click());
+
+input.onchange = async () => {
+    const file = input.files[0];
     if (!file) return;
 
     const fd = new FormData();
@@ -119,11 +74,48 @@ document.getElementById("upload").addEventListener("change", async e => {
     const data = await res.json();
 
     sessionId = data.session_id;
+    loadTree(data.tree);
+};
 
-    const treeDiv = document.getElementById("tree");
-    treeDiv.innerHTML = "";
-    treeDiv.appendChild(renderTree(data.tree));
-});
+// =========================
+// ARBOL
+// =========================
+function toJsTree(obj, base = "") {
+    return Object.entries(obj).map(([name, val]) => {
+        const full = base ? base + "/" + name : name;
+        return {
+            text: name,
+            id: full,
+            children: val ? toJsTree(val, full) : false,
+            icon: val ? "jstree-folder" : "jstree-file"
+        };
+    });
+}
+
+function loadTree(tree) {
+    $("#tree").jstree("destroy").jstree({
+        core: { data: toJsTree(tree) }
+    }).on("select_node.jstree", async (e, d) => {
+
+        if (d.node.children !== false) return;
+
+        const res = await fetch(
+            `/file/${sessionId}/${encodeURIComponent(d.node.id)}`
+        );
+        const data = await res.json();
+
+        editor.setValue(data.content || "");
+        editor.setOption("readOnly", !data.editable);
+
+        if (data.type === "java") {
+            editor.setOption("mode", "text/x-java");
+        } else if (data.type === "yaml") {
+            editor.setOption("mode", "yaml");
+        } else {
+            editor.setOption("mode", "text");
+        }
+    });
+}
 </script>
 
 </body>
