@@ -2,145 +2,53 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>JAR Viewer</title>
-
-<link rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
-<link rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/java/java.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
-
+<title>JAR Decompiler</title>
 <style>
-body {
-    margin: 0;
-    font-family: Arial, sans-serif;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-}
-
-#upload-bar {
-    background: #111;
-    padding: 20px;
-    text-align: center;
-}
-
-#upload {
-    font-size: 20px;
-    padding: 15px;
-    background: red;
-    color: white;
-    border: none;
-    cursor: pointer;
-}
-
-#main {
-    flex: 1;
-    display: flex;
-}
-
-#tree {
-    width: 30%;
-    border-right: 1px solid #ccc;
-    overflow: auto;
-    padding: 10px;
-}
-
-#editor {
-    width: 70%;
-    height: 100%;
-}
+body { font-family: Arial; display:flex; height:100vh; margin:0 }
+#left { width:30%; border-right:1px solid #ccc; padding:10px; overflow:auto }
+#right { flex:1 }
+textarea { width:100%; height:100%; font-family:monospace }
+button { padding:10px; margin-bottom:10px }
 </style>
 </head>
-
 <body>
 
-<div id="upload-bar">
-    <input type="file" id="upload" accept=".jar">
+<div id="left">
+  <input type="file" id="upload" accept=".jar"><br><br>
+  <ul id="files"></ul>
 </div>
 
-<div id="main">
-    <div id="tree">SUBÍ UN JAR</div>
-    <textarea id="editor"></textarea>
+<div id="right">
+  <textarea id="editor" readonly></textarea>
 </div>
 
 <script>
-let sessionId = null;
+let files = []
 
-const editor = CodeMirror.fromTextArea(
-    document.getElementById("editor"),
-    {
-        lineNumbers: true,
-        readOnly: true,
-        mode: "text"
-    }
-);
+document.getElementById("upload").onchange = async e => {
+  const fd = new FormData()
+  fd.append("file", e.target.files[0])
 
-// =====================
-// SUBIR JAR
-// =====================
-document.getElementById("upload").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  const res = await fetch("/upload", { method:"POST", body:fd })
+  const data = await res.json()
 
-    const fd = new FormData();
-    fd.append("file", file);
+  files = data.files
+  const ul = document.getElementById("files")
+  ul.innerHTML = ""
 
-    const res = await fetch("/upload", {
-        method: "POST",
-        body: fd
-    });
-
-    const data = await res.json();
-    sessionId = data.session_id;
-
-    loadTree(data.tree);
-});
-
-// =====================
-// ARBOL
-// =====================
-function toJsTree(obj, base = "") {
-    return Object.entries(obj).map(([name, val]) => {
-        const full = base ? base + "/" + name : name;
-        return {
-            text: name,
-            id: full,
-            children: val ? toJsTree(val, full) : false,
-            icon: val ? "jstree-folder" : "jstree-file"
-        };
-    });
+  files.forEach(f => {
+    const li = document.createElement("li")
+    li.textContent = f
+    li.style.cursor = "pointer"
+    li.onclick = () => loadFile(f)
+    ul.appendChild(li)
+  })
 }
 
-function loadTree(tree) {
-    $("#tree").jstree("destroy").jstree({
-        core: { data: toJsTree(tree) }
-    }).on("select_node.jstree", async (e, d) => {
-
-        if (d.node.children !== false) return;
-
-        const res = await fetch(
-            `/file/${sessionId}/${encodeURIComponent(d.node.id)}`
-        );
-
-        const data = await res.json();
-
-        editor.setValue(data.content || "");
-        editor.setOption("readOnly", !data.editable);
-
-        if (data.type === "java") {
-            editor.setOption("mode", "text/x-java");
-        } else if (data.type === "yaml") {
-            editor.setOption("mode", "yaml");
-        } else {
-            editor.setOption("mode", "text");
-        }
-    });
+async function loadFile(name) {
+  const res = await fetch("/file/" + encodeURIComponent(name))
+  const data = await res.json()
+  document.getElementById("editor").value = data.content
 }
 </script>
 
