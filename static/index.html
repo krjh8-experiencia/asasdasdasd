@@ -17,11 +17,14 @@
         #buttons { padding: 15px; background: #eee; border-bottom: 1px solid #ddd; }
         #editor { flex: 1; }
         button, input { margin-right: 10px; padding: 8px 12px; font-size: 14px; }
-        .status { padding: 10px; background: #fff3cd; color: #856404; border-bottom: 1px solid #ddd; }
+        .status { padding: 10px; background: #d4edda; color: #155724; border: 1px solid #c3e6cb; margin: 10px; border-radius: 4px; }
+        .error { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
     </style>
 </head>
 <body>
-    <div id="tree"><div class="status">Subí un .jar para comenzar</div></div>
+    <div id="tree">
+        <div class="status">Subí un archivo .jar para comenzar</div>
+    </div>
     <div id="editor-container">
         <div id="buttons">
             <input type="file" id="upload" accept=".jar">
@@ -38,11 +41,23 @@
         const editor = CodeMirror(document.getElementById('editor'), {
             lineNumbers: true,
             mode: 'text',
-            readOnly: true,
-            theme: 'default'
+            readOnly: true
         });
 
-        // Convierte el árbol del backend a formato jsTree
+        // Limpia y muestra mensaje de estado
+        function setStatus(message, isError = false) {
+            const tree = document.getElementById('tree');
+            let status = tree.querySelector('.status');
+            if (!status) {
+                status = document.createElement('div');
+                status.className = 'status';
+                tree.prepend(status);
+            }
+            status.textContent = message;
+            status.classList.toggle('error', isError);
+        }
+
+        // Convierte el árbol del backend
         function convertToJsTree(data, path = '') {
             const children = [];
             for (const [name, value] of Object.entries(data)) {
@@ -67,38 +82,34 @@
             $('#tree').jstree({
                 core: { data: jstreeData }
             }).on('select_node.jstree', async (e, selected) => {
-                if (selected.node.children !== false) {
-                    $('#tree .status')?.remove();
-                    return; // Es carpeta
-                }
+                if (selected.node.children !== false) return; // carpeta
 
                 currentPath = selected.node.id;
-                document.querySelector('#tree .status')?.remove();
-                const status = document.createElement('div');
-                status.className = 'status';
-                status.textContent = `Cargando ${currentPath}...`;
-                document.getElementById('tree').appendChild(status);
+                setStatus(`Cargando ${currentPath}...`);
 
                 try {
-                    const res = await fetch(`/file/${sessionId}/${encodeURIComponent(currentPath)}`);
+                    const encodedPath = encodeURIComponent(currentPath);
+                    const res = await fetch(`/file/${sessionId}/${encodedPath}`);
                     const data = await res.json();
 
                     if (!res.ok) {
-                        throw new Error(data.detail || `Error ${res.status}`);
+                        throw new Error(data.detail || `Error HTTP ${res.status}`);
                     }
 
-                    editor.setValue(data.content || '// No se pudo leer el contenido');
+                    if (!data.content && data.content !== '') {
+                        throw new Error('El servidor no devolvió contenido');
+                    }
+
+                    editor.setValue(data.content);
                     editor.setOption('mode', data.type === 'java' ? 'text/x-java' : 'yaml');
                     editor.setOption('readOnly', !data.editable);
                     document.getElementById('save-btn').disabled = !data.editable;
 
-                    status.textContent = data.editable 
-                        ? `Editando: ${currentPath} (editable)` 
-                        : `Vista: ${currentPath} (solo lectura)`;
+                    setStatus(`Abierto: ${currentPath} (${data.editable ? 'editable' : 'solo lectura'})`);
                 } catch (err) {
-                    console.error(err);
-                    status.textContent = `Error al cargar: ${err.message}`;
-                    editor.setValue(`// Error al cargar el archivo:\n// ${err.message}`);
+                    console.error('Error cargando archivo:', err);
+                    setStatus(`Error al cargar ${currentPath}: ${err.message}`, true);
+                    editor.setValue(`// Error al cargar el archivo\n// ${err.message}`);
                 }
             });
         }
@@ -106,19 +117,15 @@
         // Subida del JAR
         document.getElementById('upload').addEventListener('change', async (e) => {
             const file = e.target.files[0];
-            if (!file || !file.name.endsWith('.jar')) {
-                alert('Selecciona un archivo .jar válido');
+            if (!file || !file.name.toLowerCase().endsWith('.jar')) {
+                setStatus('Por favor selecciona un archivo .jar válido', true);
                 return;
             }
 
+            setStatus(`Subiendo y extrayendo ${file.name}...`);
+
             const formData = new FormData();
             formData.append('file', file);
-
-            const status = document.createElement('div');
-            status.className = 'status';
-            status.textContent = 'Subiendo y extrayendo JAR...';
-            document.getElementById('tree').innerHTML = '';
-            document.getElementById('tree').appendChild(status);
 
             try {
                 const res = await fetch('/upload', { method: 'POST', body: formData });
@@ -129,9 +136,9 @@
                 sessionId = data.session_id;
                 loadTree(data.tree);
                 document.getElementById('download-btn').disabled = false;
-                status.textContent = '¡JAR cargado! Explora los archivos.';
+                setStatus('¡JAR cargado con éxito! Haz click en un archivo para editar.');
             } catch (err) {
-                status.textContent = `Error: ${err.message}`;
+                setStatus(`Error al subir: ${err.message}`, true);
                 console.error(err);
             }
         });
@@ -139,27 +146,34 @@
         // Guardar
         document.getElementById('save-btn').addEventListener('click', async () => {
             if (!currentPath) return;
+
             const content = editor.getValue();
+            setStatus('Guardando...');
+
             try {
-                const res = await fetch(`/save/${sessionId}/${encodeURIComponent(currentPath)}`, {
+                const encodedPath = encodeURIComponent(currentPath);
+                const res = await fetch(`/save/${sessionId}/${encodedPath}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content })
                 });
                 const result = await res.json();
+
                 if (res.ok) {
-                    alert('¡Guardado correctamente!');
+                    setStatus('¡Guardado y recompilado correctamente!');
                 } else {
-                    alert('Error al guardar: ' + (result.detail || res.statusText));
+                    throw new Error(result.detail || 'Error al guardar');
                 }
             } catch (err) {
-                alert('Error de conexión: ' + err.message);
+                setStatus(`Error al guardar: ${err.message}`, true);
             }
         });
 
         // Descargar
         document.getElementById('download-btn').addEventListener('click', () => {
-            if (sessionId) window.location.href = `/download/${sessionId}`;
+            if (sessionId) {
+                window.location.href = `/download/${sessionId}`;
+            }
         });
     </script>
 </body>
