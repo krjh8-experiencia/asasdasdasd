@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Editor de JAR</title>
+    <title>Editor de JAR / Plugin</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
@@ -11,20 +11,21 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/java/java.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
     <style>
-        body { font-family: Arial; display: flex; }
-        #tree { width: 30%; height: 100vh; overflow: auto; }
+        body { font-family: Arial; display: flex; margin: 0; height: 100vh; }
+        #tree { width: 30%; height: 100vh; overflow: auto; border-right: 1px solid #ccc; padding: 10px; }
         #editor-container { width: 70%; height: 100vh; display: flex; flex-direction: column; }
+        #buttons { padding: 15px; background: #f5f5f5; border-bottom: 1px solid #ccc; }
         #editor { flex: 1; }
-        #buttons { padding: 10px; }
+        button, input { margin-right: 10px; padding: 8px 12px; }
     </style>
 </head>
 <body>
-    <div id="tree"></div>
+    <div id="tree">Subí un .jar para ver el árbol de archivos</div>
     <div id="editor-container">
         <div id="buttons">
             <input type="file" id="upload" accept=".jar">
-            <button id="save-btn" disabled>Guardar</button>
-            <button id="download-btn" disabled>Descargar JAR Modificado</button>
+            <button id="save-btn" disabled>Guardar archivo</button>
+            <button id="download-btn" disabled>Descargar JAR modificado</button>
         </div>
         <div id="editor"></div>
     </div>
@@ -32,80 +33,114 @@
     <script>
         let sessionId = null;
         let currentPath = null;
-        let editor = null;
-        let fileType = null;
-
-        // Initialize CodeMirror
-        editor = CodeMirror(document.getElementById('editor'), {
+        let editor = CodeMirror(document.getElementById('editor'), {
             lineNumbers: true,
             mode: 'text',
             readOnly: true
         });
 
-        // Upload JAR
-        document.getElementById('upload').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            const formData = new FormData();
-            formData.append('file', file);
-            const res = await fetch('/upload', { method: 'POST', body: formData });
-            const data = await res.json();
-            sessionId = data.session_id;
-            loadTree(data.tree);
-            document.getElementById('download-btn').disabled = false;
-        });
+        // === FUNCIÓN CORREGIDA PARA CONVERTIR EL ÁRBOL ===
+        function convertToJsTree(data, path = '') {
+            const children = [];
+            for (const [name, value] of Object.entries(data)) {
+                const fullPath = path ? `${path}/${name}` : name;
+                const node = {
+                    text: name,
+                    id: fullPath,
+                    children: [],
+                    icon: null
+                };
 
-        // Load tree with jsTree
+                if (value === null) {
+                    // Es archivo
+                    node.children = false;
+                    node.icon = 'jstree-file';
+                } else {
+                    // Es carpeta → recursivo
+                    node.children = convertToJsTree(value, fullPath);
+                    node.icon = 'jstree-folder';
+                }
+                children.push(node);
+            }
+            return children;
+        }
+
+        // === CARGA EL ÁRBOL ===
         function loadTree(treeData) {
-            const jstreeData = convertToJsTreeFormat(treeData, '');
+            const jstreeData = convertToJsTree(treeData);
             $('#tree').jstree('destroy').empty();
             $('#tree').jstree({
-                'core': { 'data': jstreeData },
-            }).on('select_node.jstree', async (e, data) => {
-                if (data.node.type !== 'file') return;
-                currentPath = data.node.id;
+                core: { data: jstreeData }
+            }).on('select_node.jstree', async (e, selected) => {
+                if (selected.node.children !== false) return; // es carpeta
+
+                currentPath = selected.node.id;
                 const res = await fetch(`/file/${sessionId}/${currentPath}`);
+                if (!res.ok) {
+                    alert('Error al leer archivo');
+                    return;
+                }
                 const fileData = await res.json();
-                fileType = fileData.type;
-                editor.setOption('mode', fileType === 'java' ? 'java' : 'yaml');
-                editor.setOption('readOnly', !fileData.editable);
+
                 editor.setValue(fileData.content || '');
+                editor.setOption('mode', fileData.type === 'java' ? 'text/x-java' : 'yaml');
+                editor.setOption('readOnly', !fileData.editable);
                 document.getElementById('save-btn').disabled = !fileData.editable;
             });
         }
 
-        // Convert dict tree to jsTree format
-        function convertToJsTreeFormat(node, path) {
-            const result = [];
-            for (const key in node) {
-                const newPath = path ? `${path}/${key}` : key;
-                const child = {
-                    text: key,
-                    id: newPath,
-                    children: convertToJsTreeFormat(node[key], newPath),
-                    type: Object.keys(node[key]).length === 0 ? 'file' : 'folder'
-                };
-                result.push(child);
-            }
-            return result;
-        }
+        // === SUBIDA DEL JAR (CON MÁS DEBUG) ===
+        document.getElementById('upload').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
 
-        // Save
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    alert('Error del servidor: ' + (data.detail || res.statusText));
+                    console.error(data);
+                    return;
+                }
+
+                if (!data.session_id || !data.tree) {
+                    alert('Respuesta incompleta del servidor');
+                    console.error(data);
+                    return;
+                }
+
+                sessionId = data.session_id;
+                loadTree(data.tree);
+                document.getElementById('download-btn').disabled = false;
+                alert('¡JAR cargado perfectamente! Ahora explorá el árbol.');
+            } catch (err) {
+                alert('Error de red: ' + err.message);
+                console.error(err);
+            }
+        });
+
+        // === GUARDAR ARCHIVO ===
         document.getElementById('save-btn').addEventListener('click', async () => {
             if (!currentPath) return;
+
             const content = editor.getValue();
             const res = await fetch(`/save/${sessionId}/${currentPath}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content })
             });
-            if (res.ok) alert('Guardado!');
+
+            if (res.ok) alert('¡Guardado y recompilado correctamente!');
             else alert('Error al guardar');
         });
 
-        // Download
+        // === DESCARGAR JAR MODIFICADO ===
         document.getElementById('download-btn').addEventListener('click', () => {
-            if (!sessionId) return;
-            window.location.href = `/download/${sessionId}`;
+            if (sessionId) window.location.href = `/download/${sessionId}`;
         });
     </script>
 </body>
