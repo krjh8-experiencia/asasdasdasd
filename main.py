@@ -38,17 +38,24 @@ def decompile_class(class_path):
                 CFR_JAR,
                 class_path,
                 "--stdout",
-                "true"
+                "true",
+                "--recover",
+                "true",
+                "--silent",
+                "false"
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
 
-        if result.returncode != 0:
-            return "// ERROR CFR\n" + result.stderr
+        if result.stdout.strip():
+            return result.stdout
 
-        return result.stdout
+        if result.stderr.strip():
+            return "// CFR STDERR\n" + result.stderr
+
+        return "// CFR NO DEVOLVIÓ NADA\n// El .class puede estar ofuscado o incompleto"
 
     except Exception as e:
         return f"// ERROR EJECUTANDO CFR\n{e}"
@@ -115,8 +122,8 @@ def get_file(session_id: str, path: str):
 
     # -------- TEXTO --------
     try:
-        with open(real_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
+        with open(real_path, "rb") as f:
+           content = f.read().decode("utf-8", errors="replace")
 
         file_type = "yaml" if path.endswith((".yml", ".yaml")) else "text"
 
