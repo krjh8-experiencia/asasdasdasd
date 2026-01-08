@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>JAR Editor</title>
+<title>Editor de JAR</title>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
@@ -14,18 +14,45 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
 
 <style>
-body { margin:0; display:flex; height:100vh; font-family:Arial }
-#tree { width:30%; border-right:1px solid #ccc; overflow:auto; padding:10px }
-#editor { flex:1 }
+body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    font-family: Arial, sans-serif;
+}
+#tree {
+    width: 30%;
+    border-right: 1px solid #ccc;
+    overflow: auto;
+    padding: 10px;
+}
+#editor-container {
+    width: 70%;
+    display: flex;
+    flex-direction: column;
+}
+#toolbar {
+    padding: 10px;
+    border-bottom: 1px solid #ccc;
+}
+#editor {
+    flex: 1;
+}
 </style>
 </head>
 
 <body>
 
-<div id="tree"></div>
-<div id="editor"></div>
+<div id="tree">
+    <strong>Subí un .jar</strong>
+</div>
 
-<input type="file" id="upload" accept=".jar">
+<div id="editor-container">
+    <div id="toolbar">
+        <input type="file" id="upload" accept=".jar">
+    </div>
+    <div id="editor"></div>
+</div>
 
 <script>
 let sessionId = null;
@@ -33,44 +60,75 @@ let currentPath = null;
 
 const editor = CodeMirror(document.getElementById("editor"), {
     lineNumbers: true,
-    readOnly: true
+    readOnly: true,
+    mode: "text"
 });
 
-function convert(tree, path="") {
-    return Object.entries(tree).map(([name, val]) => ({
-        text: name,
-        id: path ? path + "/" + name : name,
-        children: val ? convert(val, path ? path + "/" + name : name) : false
-    }));
+// Convierte el árbol del backend a jsTree
+function convertTree(tree, base = "") {
+    return Object.entries(tree).map(([name, value]) => {
+        const fullPath = base ? base + "/" + name : name;
+        return {
+            text: name,
+            id: fullPath,
+            children: value ? convertTree(value, fullPath) : false,
+            icon: value ? "jstree-folder" : "jstree-file"
+        };
+    });
 }
 
+// Carga el árbol
 function loadTree(tree) {
-    $("#tree").jstree("destroy").jstree({
-        core: { data: convert(tree) }
-    }).on("select_node.jstree", async (e, d) => {
+    $("#tree").jstree("destroy");
 
+    $("#tree").jstree({
+        core: {
+            data: convertTree(tree)
+        }
+    })
+    // ⚠️ ESTE ES EL FIX CLAVE
+    .on("activate_node.jstree", async (e, d) => {
+
+        // Si es carpeta, no hacer nada
         if (d.node.children !== false) return;
 
         currentPath = d.node.id;
 
-        const res = await fetch(`/file/${sessionId}/${currentPath}`);
-        const data = await res.json();
+        try {
+            const res = await fetch(`/file/${sessionId}/${currentPath}`);
+            const data = await res.json();
 
-        editor.setValue(data.content || "");
-        editor.setOption("mode", data.type === "java" ? "text/x-java" : "yaml");
-        editor.setOption("readOnly", !data.editable);
+            console.log("Archivo cargado:", data); // debug
+
+            editor.setValue(data.content || "");
+            editor.setOption(
+                "mode",
+                data.type === "java" ? "text/x-java" : "yaml"
+            );
+            editor.setOption("readOnly", !data.editable);
+
+        } catch (err) {
+            editor.setValue("// ERROR al cargar archivo\n" + err);
+        }
     });
 }
 
-document.getElementById("upload").addEventListener("change", async e => {
-    const f = e.target.files[0];
-    const fd = new FormData();
-    fd.append("file", f);
+// Subir JAR
+document.getElementById("upload").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-    const res = await fetch("/upload", { method:"POST", body:fd });
+    const form = new FormData();
+    form.append("file", file);
+
+    const res = await fetch("/upload", {
+        method: "POST",
+        body: form
+    });
+
     const data = await res.json();
-
     sessionId = data.session_id;
+
     loadTree(data.tree);
 });
 </script>
