@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>JAR Viewer / Decompiler</title>
+<title>JAR Viewer</title>
 
 <link rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
@@ -18,27 +18,56 @@
 <style>
 body {
     margin: 0;
-    display: flex;
+    font-family: Arial, sans-serif;
     height: 100vh;
-    font-family: Arial;
+    display: flex;
+    flex-direction: column;
 }
+
+#upload-bar {
+    background: #111;
+    padding: 20px;
+    text-align: center;
+}
+
+#upload {
+    font-size: 20px;
+    padding: 15px;
+    background: red;
+    color: white;
+    border: none;
+    cursor: pointer;
+}
+
+#main {
+    flex: 1;
+    display: flex;
+}
+
 #tree {
     width: 30%;
     border-right: 1px solid #ccc;
     overflow: auto;
     padding: 10px;
 }
+
 #editor {
     width: 70%;
-    height: 100vh;
+    height: 100%;
 }
 </style>
 </head>
 
 <body>
 
-<div id="tree"></div>
-<textarea id="editor"></textarea>
+<div id="upload-bar">
+    <input type="file" id="upload" accept=".jar">
+</div>
+
+<div id="main">
+    <div id="tree">SUBÍ UN JAR</div>
+    <textarea id="editor"></textarea>
+</div>
 
 <script>
 let sessionId = null;
@@ -52,34 +81,30 @@ const editor = CodeMirror.fromTextArea(
     }
 );
 
-// =========================
+// =====================
 // SUBIR JAR
-// =========================
-const input = document.createElement("input");
-input.type = "file";
-input.accept = ".jar";
-input.style.display = "none";
-document.body.appendChild(input);
-
-document.body.addEventListener("dblclick", () => input.click());
-
-input.onchange = async () => {
-    const file = input.files[0];
+// =====================
+document.getElementById("upload").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
     if (!file) return;
 
     const fd = new FormData();
     fd.append("file", file);
 
-    const res = await fetch("/upload", { method: "POST", body: fd });
+    const res = await fetch("/upload", {
+        method: "POST",
+        body: fd
+    });
+
     const data = await res.json();
-
     sessionId = data.session_id;
-    loadTree(data.tree);
-};
 
-// =========================
+    loadTree(data.tree);
+});
+
+// =====================
 // ARBOL
-// =========================
+// =====================
 function toJsTree(obj, base = "") {
     return Object.entries(obj).map(([name, val]) => {
         const full = base ? base + "/" + name : name;
@@ -102,6 +127,7 @@ function loadTree(tree) {
         const res = await fetch(
             `/file/${sessionId}/${encodeURIComponent(d.node.id)}`
         );
+
         const data = await res.json();
 
         editor.setValue(data.content || "");
