@@ -24,182 +24,153 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 sessions: Dict[str, str] = {}
 
-# Nombre del CFR que subiste (recomiendo descargar la última y llamarla cfr.jar)
+# ⚠️ Asegurate que ESTE archivo exista
 CFR_JAR = "cfr-0.152.jar"
+
 
 def build_file_tree(directory: str) -> Dict:
     tree = {}
-    for root, dirs, files in os.walk(directory):
+    for root, _, files in os.walk(directory):
         current = tree
-        rel_path = os.path.relpath(root, directory)
-        if rel_path != '.':
-            parts = rel_path.split(os.sep)
-            for part in parts:
+        rel = os.path.relpath(root, directory)
+        if rel != ".":
+            for part in rel.split(os.sep):
                 current = current.setdefault(part, {})
-        for file in files:
-            current[file] = None
+        for f in files:
+            current[f] = None
     return tree
+
 
 def safe_join(base: str, path: str) -> str:
     base = os.path.abspath(base)
-    full = os.path.abspath(os.path.join(base, *path.split('/')))
+    full = os.path.abspath(os.path.join(base, *path.split("/")))
     if not full.startswith(base):
-        raise ValueError("Invalid path")
+        raise ValueError("Ruta inválida")
     return full
+
 
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
 
+
 @app.post("/upload")
 async def upload_jar(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith('.jar'):
-        raise HTTPException(status_code=400, detail="Debe ser un archivo .jar")
+    if not file.filename.lower().endswith(".jar"):
+        raise HTTPException(400, "Debe ser .jar")
 
     session_id = str(uuid.uuid4())
     temp_dir = tempfile.mkdtemp()
     sessions[session_id] = temp_dir
 
     jar_path = os.path.join(temp_dir, "original.jar")
-    with open(jar_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with open(jar_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
 
-    extracted_dir = os.path.join(temp_dir, "extracted")
-    os.makedirs(extracted_dir)
-    with zipfile.ZipFile(jar_path, 'r') as zip_ref:
-        zip_ref.extractall(extracted_dir)
+    extracted = os.path.join(temp_dir, "extracted")
+    os.makedirs(extracted)
 
-    tree = build_file_tree(extracted_dir)
-    return {"session_id": session_id, "tree": tree}
+    with zipfile.ZipFile(jar_path, "r") as zipf:
+        zipf.extractall(extracted)
+
+    return {
+        "session_id": session_id,
+        "tree": build_file_tree(extracted)
+    }
+
 
 @app.get("/file/{session_id}/{path:path}")
 async def get_file(session_id: str, path: str):
     if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+        raise HTTPException(404, "Sesión inválida")
 
-    extracted_dir = os.path.join(sessions[session_id], "extracted")
+    extracted = os.path.join(sessions[session_id], "extracted")
 
     try:
-        full_path = safe_join(extracted_dir, path)
+        full = safe_join(extracted, path)
     except:
-        raise HTTPException(status_code=400, detail="Ruta inválida")
+        raise HTTPException(400, "Ruta inválida")
 
-    if not os.path.exists(full_path):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    if not os.path.exists(full):
+        raise HTTPException(404, "Archivo no existe")
 
     ext = os.path.splitext(path)[1].lower()
 
-    # Archivos de texto (yml, yaml, txt, etc.)
-    if ext in {'.yml', '.yaml', '.txt', '.json', '.properties', '.cfg', '.conf', '.md'}:
+    # ---------- ARCHIVOS TEXTO ----------
+    if ext in {".yml", ".yaml", ".txt", ".json", ".properties", ".cfg", ".conf", ".md"}:
         try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            return {"content": content, "type": "yaml" if ext in {'.yml', '.yaml'} else "text", "editable": True}
+            with open(full, "rb") as f:
+                content = f.read().decode("utf-8", errors="replace")
+            return {"content": content, "type": "yaml", "editable": True}
         except Exception as e:
-            return {"content": f"// Error leyendo archivo:\n// {str(e)}", "type": "text", "editable": False}
+            return {"content": f"# ERROR\n{e}", "type": "text", "editable": False}
 
-    # .class → DECOMPILACIÓN CORREGIDA
-    elif ext == '.class':
+    # ---------- DECOMPILAR .CLASS ----------
+    if ext == ".class":
         decomp_dir = os.path.join(sessions[session_id], "decompiled")
         os.makedirs(decomp_dir, exist_ok=True)
 
-        java_rel_path = os.path.splitext(path)[0] + '.java'
-        java_full_path = safe_join(decomp_dir, java_rel_path)
-        os.makedirs(os.path.dirname(java_full_path), exist_ok=True)  # Crea carpetas del paquete
+        cmd = ["java", "-jar", CFR_JAR, full, "--outputdir", decomp_dir]
 
         try:
-            # Comando CFR optimizado para que funcione con paquetes y no falle silenciosamente
-            cmd = [
-                "java", "-jar", CFR_JAR, full_path,
-                "--outputdir", decomp_dir,
-                "--extraclasspath", "",      # Fuerza análisis completo
-                "--decodeenumswitch", "true",
-                "--sugarenums", "true",
-                "--recover", "true",
-                "--silent", "false"
-            ]
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=90  # Más tiempo para .class grandes
-            )
-
-            if result.returncode != 0:
-                raise Exception(f"CFR falló (código {result.returncode}):\n{result.stderr.strip()}")
-
-            if not os.path.exists(java_full_path):
-                raise Exception(f"No se generó el archivo .java.\nCFR output:\n{result.stdout.strip() or result.stderr.strip() or 'Sin salida'}")
-
-            with open(java_full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            return {"content": content, "type": "java", "editable": True}
-
-        except subprocess.TimeoutExpired:
-            fallback = "// ERROR: Decompilación tardó demasiado (>90s)\n// El .class es muy grande o complejo."
+            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         except Exception as e:
-            fallback = f"// ERROR AL DESCOMPILAR {path}\n// {str(e)}\n// CFR output: {result.stdout if 'result' in locals() else ''}"
+            return {
+                "content": f"// ERROR ejecutando CFR\n// {e}",
+                "type": "java",
+                "editable": False
+            }
 
-        return {"content": fallback, "type": "java", "editable": True}
+        # 🔍 BUSCAR EL .JAVA REAL GENERADO
+        class_name = os.path.basename(path).replace(".class", ".java")
+        found_java = None
 
-    else:
-        return {"content": "[Archivo binario - no editable]", "type": "text", "editable": False}
+        for root, _, files in os.walk(decomp_dir):
+            for f in files:
+                if f == class_name:
+                    found_java = os.path.join(root, f)
+                    break
+
+        if not found_java:
+            return {
+                "content": "// ERROR: CFR no generó el .java",
+                "type": "java",
+                "editable": False
+            }
+
+        with open(found_java, "r", encoding="utf-8", errors="replace") as f:
+            return {"content": f.read(), "type": "java", "editable": True}
+
+    return {"content": "[Archivo binario]", "type": "text", "editable": False}
+
 
 @app.post("/save/{session_id}/{path:path}")
 async def save_file(session_id: str, path: str, request: Request):
     if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+        raise HTTPException(404, "Sesión inválida")
 
     data = await request.json()
     content = data.get("content")
-    if content is None:
-        raise HTTPException(status_code=400, detail="Falta contenido")
 
-    extracted_dir = os.path.join(sessions[session_id], "extracted")
-    full_path = safe_join(extracted_dir, path)
-    ext = os.path.splitext(path)[1].lower()
+    extracted = os.path.join(sessions[session_id], "extracted")
+    full = safe_join(extracted, path)
 
-    if ext in {'.yml', '.yaml', '.txt', '.json', '.properties', '.cfg', '.conf'}:
-        with open(full_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return {"message": "Guardado correctamente"}
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(content)
 
-    elif ext == '.class':
-        java_rel_path = os.path.splitext(path)[0] + '.java'
-        temp_dir = os.path.join(sessions[session_id], "temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_java_path = safe_join(temp_dir, java_rel_path)
-        os.makedirs(os.path.dirname(temp_java_path), exist_ok=True)
+    return {"message": "Guardado"}
 
-        with open(temp_java_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-
-        try:
-            subprocess.check_call(["javac", temp_java_path])
-            new_class_path = os.path.splitext(temp_java_path)[0] + '.class'
-            if os.path.exists(new_class_path):
-                shutil.move(new_class_path, full_path)
-                return {"message": "Compilado y guardado correctamente"}
-            else:
-                raise Exception("No se generó el .class compilado")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error al compilar: {str(e)}")
-
-    else:
-        raise HTTPException(status_code=400, detail="Tipo de archivo no editable")
 
 @app.get("/download/{session_id}")
-async def download_modified(session_id: str):
+async def download(session_id: str):
     if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+        raise HTTPException(404, "Sesión inválida")
 
-    temp_dir = sessions[session_id]
-    extracted_dir = os.path.join(temp_dir, "extracted")
-    modified_jar = os.path.join(temp_dir, "modified.jar")
+    base = sessions[session_id]
+    extracted = os.path.join(base, "extracted")
+    jar = os.path.join(base, "modified.jar")
 
-    shutil.make_archive(modified_jar[:-4], 'zip', extracted_dir)
-    os.rename(modified_jar[:-4] + '.zip', modified_jar)
+    shutil.make_archive(jar.replace(".jar", ""), "zip", extracted)
+    os.rename(jar.replace(".jar", "") + ".zip", jar)
 
-    return FileResponse(modified_jar, filename="modified.jar", media_type="application/java-archive")
+    return FileResponse(jar, filename="modified.jar")
