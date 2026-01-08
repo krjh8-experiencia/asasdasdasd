@@ -1,12 +1,14 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import zipfile
+import subprocess
 import uuid
 import os
-import subprocess
 
-app = FastAPI()
+# =====================
+# CONFIG
+# =====================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")
@@ -14,81 +16,92 @@ CFR_JAR = os.path.join(BASE_DIR, "cfr-0.152.jar")
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
-# =========================
-# UTILIDADES
-# =========================
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-def build_tree(file_list):
+# =====================
+# UTILS
+# =====================
+
+def build_tree(files):
     tree = {}
-    for path in file_list:
-        parts = path.split("/")
+    for path in files:
         cur = tree
+        parts = path.split("/")
         for p in parts[:-1]:
             cur = cur.setdefault(p, {})
         cur[parts[-1]] = None
     return tree
 
 
-def decompile_class(class_path):
+def read_text_file(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    return data.decode("utf-8", errors="replace")
+
+
+def decompile_class(class_path, jar_path):
+    """
+    CFR REAL:
+    - usa el JAR como classpath
+    - stdout forzado
+    - nunca devuelve vacío
+    """
     try:
         result = subprocess.run(
             [
-                "java",
-                "-jar",
-                CFR_JAR,
+                "java", "-jar", CFR_JAR,
                 class_path,
-                "--stdout",
-                "true",
-                "--recover",
-                "true",
-                "--silent",
-                "false"
+                "--extraclasspath", jar_path,
+                "--stdout", "true",
+                "--recover", "true",
+                "--silent", "false"
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            timeout=60
         )
 
         if result.stdout.strip():
             return result.stdout
 
         if result.stderr.strip():
-            return "// CFR STDERR\n" + result.stderr
+            return "// CFR ERROR\n" + result.stderr
 
-        return "// CFR NO DEVOLVIÓ NADA\n// El .class puede estar ofuscado o incompleto"
+        return "// CFR no devolvió salida.\n// Clase ofuscada o dependencias faltantes."
 
+    except subprocess.TimeoutExpired:
+        return "// ERROR: CFR tardó demasiado"
     except Exception as e:
         return f"// ERROR EJECUTANDO CFR\n{e}"
 
 
-# =========================
-# FRONTEND
-# =========================
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# =====================
+# ROUTES
+# =====================
 
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
 
 
-# =========================
-# SUBIR JAR
-# =========================
-
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    session_id = str(uuid.uuid4())
-    session_path = os.path.join(SESSIONS_DIR, session_id)
-    os.makedirs(session_path, exist_ok=True)
+    if not file.filename.endswith(".jar"):
+        raise HTTPException(status_code=400, detail="Solo .jar")
 
-    jar_path = os.path.join(session_path, file.filename)
+    session_id = str(uuid.uuid4())
+    session_dir = os.path.join(SESSIONS_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    jar_path = os.path.join(session_dir, file.filename)
 
     with open(jar_path, "wb") as f:
         f.write(await file.read())
 
     with zipfile.ZipFile(jar_path, "r") as jar:
-        jar.extractall(session_path)
+        jar.extractall(session_dir)
         files = [f for f in jar.namelist() if not f.endswith("/")]
 
     return {
@@ -96,10 +109,6 @@ async def upload(file: UploadFile = File(...)):
         "tree": build_tree(files)
     }
 
-
-# =========================
-# LEER ARCHIVOS
-# =========================
 
 @app.get("/file/{session_id}/{path:path}")
 def get_file(session_id: str, path: str):
@@ -112,30 +121,34 @@ def get_file(session_id: str, path: str):
             status_code=404
         )
 
-    # -------- .CLASS --------
+    # localizar el JAR original
+    jar_file = next(
+        (f for f in os.listdir(base) if f.endswith(".jar")),
+        None
+    )
+    jar_path = os.path.join(base, jar_file) if jar_file else None
+
+    # ===== .CLASS =====
     if path.endswith(".class"):
+        if not jar_path:
+            return {
+                "content": "// JAR original no encontrado",
+                "type": "java",
+                "editable": False
+            }
+
+        java_code = decompile_class(real_path, jar_path)
         return {
-            "content": decompile_class(real_path),
+            "content": java_code,
             "type": "java",
             "editable": False
         }
 
-    # -------- TEXTO --------
-    try:
-        with open(real_path, "rb") as f:
-           content = f.read().decode("utf-8", errors="replace")
+    # ===== TEXTO (.yml, .java, etc) =====
+    content = read_text_file(real_path)
 
-        file_type = "yaml" if path.endswith((".yml", ".yaml")) else "text"
-
-        return {
-            "content": content,
-            "type": file_type,
-            "editable": True
-        }
-
-    except Exception as e:
-        return {
-            "content": f"// Error leyendo archivo\n{e}",
-            "type": "text",
-            "editable": False
-        }
+    return {
+        "content": content,
+        "type": "yaml" if path.endswith((".yml", ".yaml")) else "text",
+        "editable": True
+    }
