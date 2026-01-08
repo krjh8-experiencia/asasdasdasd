@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Editor de JAR</title>
+<title>JAR Editor DEBUG</title>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
@@ -14,49 +14,28 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/yaml/yaml.min.js"></script>
 
 <style>
-body {
-    margin: 0;
-    height: 100vh;
-    display: flex;
-    font-family: Arial, sans-serif;
-}
-#tree {
-    width: 30%;
-    border-right: 1px solid #ccc;
-    overflow: auto;
-    padding: 10px;
-}
-#editor-container {
-    width: 70%;
-    display: flex;
-    flex-direction: column;
-}
-#toolbar {
-    padding: 10px;
-    border-bottom: 1px solid #ccc;
-}
-#editor {
-    flex: 1;
-}
+body { margin:0; height:100vh; display:flex; font-family:Arial }
+#tree { width:30%; border-right:1px solid #aaa; overflow:auto; padding:10px }
+#right { width:70%; display:flex; flex-direction:column }
+#editor { flex:1 }
+#top { padding:10px; border-bottom:1px solid #aaa }
 </style>
 </head>
 
 <body>
 
-<div id="tree">
-    <strong>Subí un .jar</strong>
-</div>
+<div id="tree">Subí un JAR</div>
 
-<div id="editor-container">
-    <div id="toolbar">
+<div id="right">
+    <div id="top">
         <input type="file" id="upload" accept=".jar">
+        <span id="status"></span>
     </div>
     <div id="editor"></div>
 </div>
 
 <script>
 let sessionId = null;
-let currentPath = null;
 
 const editor = CodeMirror(document.getElementById("editor"), {
     lineNumbers: true,
@@ -64,72 +43,73 @@ const editor = CodeMirror(document.getElementById("editor"), {
     mode: "text"
 });
 
-// Convierte el árbol del backend a jsTree
-function convertTree(tree, base = "") {
-    return Object.entries(tree).map(([name, value]) => {
-        const fullPath = base ? base + "/" + name : name;
+function log(msg) {
+    console.log(msg);
+    document.getElementById("status").textContent = msg;
+}
+
+// convierte árbol backend → jsTree
+function build(tree, base="") {
+    return Object.entries(tree).map(([name, val]) => {
+        const full = base ? base + "/" + name : name;
         return {
             text: name,
-            id: fullPath,
-            children: value ? convertTree(value, fullPath) : false,
-            icon: value ? "jstree-folder" : "jstree-file"
+            id: full,
+            children: val ? build(val, full) : false
         };
     });
 }
 
-// Carga el árbol
 function loadTree(tree) {
     $("#tree").jstree("destroy");
-
     $("#tree").jstree({
-        core: {
-            data: convertTree(tree)
-        }
-    })
-    // ⚠️ ESTE ES EL FIX CLAVE
-    .on("activate_node.jstree", async (e, d) => {
+        core: { data: build(tree) }
+    });
 
-        // Si es carpeta, no hacer nada
-        if (d.node.children !== false) return;
+    // 🔥 FORZADO: click SIMPLE
+    $("#tree").on("click", ".jstree-anchor", async function () {
+        const node = $("#tree").jstree(true).get_node(this);
+        if (!node || node.children !== false) return;
 
-        currentPath = d.node.id;
+        const path = node.id;
+        log("Cargando: " + path);
 
         try {
-            const res = await fetch(`/file/${sessionId}/${currentPath}`);
+            const res = await fetch(`/file/${sessionId}/${path}`);
             const data = await res.json();
 
-            console.log("Archivo cargado:", data); // debug
+            console.log("RESPUESTA BACKEND:", data);
 
-            editor.setValue(data.content || "");
-            editor.setOption(
-                "mode",
-                data.type === "java" ? "text/x-java" : "yaml"
-            );
+            editor.setValue(data.content ?? "<<< SIN CONTENT >>>");
+            editor.setOption("mode", data.type === "java" ? "text/x-java" : "yaml");
             editor.setOption("readOnly", !data.editable);
 
-        } catch (err) {
-            editor.setValue("// ERROR al cargar archivo\n" + err);
+            log("OK: " + path);
+
+        } catch (e) {
+            editor.setValue("ERROR\n" + e);
+            log("ERROR cargando archivo");
         }
     });
 }
 
-// Subir JAR
-document.getElementById("upload").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+// subir jar
+document.getElementById("upload").addEventListener("change", async e => {
+    const f = e.target.files[0];
+    if (!f) return;
 
-    const form = new FormData();
-    form.append("file", file);
+    log("Subiendo JAR...");
 
-    const res = await fetch("/upload", {
-        method: "POST",
-        body: form
-    });
+    const fd = new FormData();
+    fd.append("file", f);
 
+    const res = await fetch("/upload", { method:"POST", body:fd });
     const data = await res.json();
-    sessionId = data.session_id;
 
+    sessionId = data.session_id;
     loadTree(data.tree);
+
+    log("JAR cargado");
 });
 </script>
 
