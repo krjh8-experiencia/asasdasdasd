@@ -1,0 +1,5 @@
+{
+  "decompilers": ["vineflower", "cfr"],
+  "java_path": "java",
+  "timeout": 30
+}
