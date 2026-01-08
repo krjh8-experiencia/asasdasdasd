@@ -4,51 +4,58 @@
 <meta charset="UTF-8">
 <title>JAR Decompiler</title>
 <style>
-body { font-family: Arial; display:flex; height:100vh; margin:0 }
-#left { width:30%; border-right:1px solid #ccc; padding:10px; overflow:auto }
-#right { flex:1 }
-textarea { width:100%; height:100%; font-family:monospace }
-button { padding:10px; margin-bottom:10px }
+body {
+  background:#0f0f0f;
+  color:#fff;
+  font-family: monospace;
+}
+button {
+  padding:10px;
+  background:#00ff88;
+  border:none;
+  cursor:pointer;
+}
+pre {
+  background:#111;
+  padding:10px;
+  overflow:auto;
+  max-height:300px;
+}
 </style>
 </head>
 <body>
 
-<div id="left">
-  <input type="file" id="upload" accept=".jar"><br><br>
-  <ul id="files"></ul>
-</div>
+<h2>Subir JAR</h2>
 
-<div id="right">
-  <textarea id="editor" readonly></textarea>
-</div>
+<input type="file" id="file" accept=".jar">
+<button onclick="upload()">Decompilar</button>
+
+<div id="out"></div>
 
 <script>
-let files = []
+async function upload() {
+  const f = document.getElementById("file").files[0];
+  if (!f) return alert("Subí un .jar");
 
-document.getElementById("upload").onchange = async e => {
-  const fd = new FormData()
-  fd.append("file", e.target.files[0])
+  const fd = new FormData();
+  fd.append("file", f);
 
-  const res = await fetch("/upload", { method:"POST", body:fd })
-  const data = await res.json()
+  const r = await fetch("/upload", { method:"POST", body:fd });
+  const data = await r.json();
 
-  files = data.files
-  const ul = document.getElementById("files")
-  ul.innerHTML = ""
+  const out = document.getElementById("out");
+  out.innerHTML = "";
 
-  files.forEach(f => {
-    const li = document.createElement("li")
-    li.textContent = f
-    li.style.cursor = "pointer"
-    li.onclick = () => loadFile(f)
-    ul.appendChild(li)
-  })
+  for (const file in data) {
+    out.innerHTML += `<h4>${file}</h4><pre>${escapeHtml(data[file])}</pre>`;
+  }
 }
 
-async function loadFile(name) {
-  const res = await fetch("/file/" + encodeURIComponent(name))
-  const data = await res.json()
-  document.getElementById("editor").value = data.content
+function escapeHtml(text) {
+  return text
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
 }
 </script>
 
