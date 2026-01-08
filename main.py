@@ -10,7 +10,7 @@ app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")
-CFR_JAR = os.path.join(BASE_DIR, "cfr.jar")
+CFR_JAR = os.path.join(BASE_DIR, "cfr-0.152.jar")
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
