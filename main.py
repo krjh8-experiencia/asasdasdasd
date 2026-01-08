@@ -12,7 +12,6 @@ from typing import Dict
 
 app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,16 +20,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Servir frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Sesiones en memoria
 sessions: Dict[str, str] = {}
 
-# Decompilador CFR (asegurate de tener cfrig-0.152.jar en la raíz)
-CFR_JAR = "cfr-0.152.jar"
+CFR_JAR = "cfr-0.152.jar"  # Nombre del JAR que subiste
 
-# Construye el árbol de archivos
 def build_file_tree(directory: str) -> Dict:
     tree = {}
     for root, dirs, files in os.walk(directory):
@@ -44,12 +39,11 @@ def build_file_tree(directory: str) -> Dict:
             current[file] = None
     return tree
 
-# Ruta segura (evita path traversal y maneja / correctamente en Linux)
 def safe_join(base: str, path: str) -> str:
     base = os.path.abspath(base)
     full = os.path.abspath(os.path.join(base, *path.split('/')))
     if not full.startswith(base):
-        raise ValueError("Invalid path - traversal attempt")
+        raise ValueError("Invalid path")
     return full
 
 @app.get("/")
@@ -94,51 +88,47 @@ async def get_file(session_id: str, path: str):
 
     ext = os.path.splitext(path)[1].lower()
 
-    # Archivos de texto editables (.yml, .yaml, .txt, .json, etc.)
-    if ext in {'.yml', '.yaml', '.txt', '.json', '.properties', '.cfg', '.conf'}:
+    # Archivos de texto
+    if ext in {'.yml', '.yaml', '.txt', '.json', '.properties', '.cfg', '.conf', '.md'}:
         try:
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             return {"content": content, "type": "yaml" if ext in {'.yml', '.yaml'} else "text", "editable": True}
         except Exception as e:
-            return {"content": f"// Error leyendo archivo:\n// {str(e)}", "type": "text", "editable": False}
+            return {"content": f"// Error leyendo archivo: {str(e)}", "type": "text", "editable": False}
 
-    # .class → decompilar con CFR
+    # .class
     elif ext == '.class':
         decomp_dir = os.path.join(sessions[session_id], "decompiled")
         os.makedirs(decomp_dir, exist_ok=True)
 
         java_rel_path = os.path.splitext(path)[0] + '.java'
         java_full_path = safe_join(decomp_dir, java_rel_path)
-        os.makedirs(os.path.dirname(java_full_path), exist_ok=True)  # Crea carpetas del paquete
+        os.makedirs(os.path.dirname(java_full_path), exist_ok=True)
 
         try:
             result = subprocess.run(
                 ["java", "-jar", CFR_JAR, full_path, "--outputdir", decomp_dir],
-                capture_output=True, text=True, timeout=30
+                capture_output=True, text=True, timeout=60
             )
 
             if result.returncode != 0:
-                raise Exception(f"CFR error: {result.stderr or result.stdout}")
+                raise Exception(f"CFR error: {result.stderr.strip() or result.stdout.strip()}")
 
             if not os.path.exists(java_full_path):
-                raise Exception(f"Archivo Java no generado. CFR dijo: {result.stdout or result.stderr or 'sin salida'}")
+                raise Exception(f"No se generó el archivo Java. CFR output: {result.stdout.strip() or result.stderr.strip()}")
 
             with open(java_full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             return {"content": content, "type": "java", "editable": True}
 
-        except subprocess.TimeoutExpired:
-            error = "Decompilación tardó demasiado (>30s)"
         except Exception as e:
-            error = str(e)
-
-        fallback = f"// ERROR AL DESCOMPILAR {path}\n// {error}\n// Posibles causas: plugin ofuscado, versión Java incompatible o clase corrupta."
-        return {"content": fallback, "type": "java", "editable": True}
+            fallback = f"// ERROR AL DESCOMPILAR {path}\n// {str(e)}\n// Posibles causas: clase ofuscada, versión incompatible o error interno."
+            return {"content": fallback, "type": "java", "editable": True}
 
     else:
-        return {"content": "[Archivo binario o no soportado - solo lectura]", "type": "text", "editable": False}
+        return {"content": "[Archivo binario - no editable]", "type": "text", "editable": False}
 
 @app.post("/save/{session_id}/{path:path}")
 async def save_file(session_id: str, path: str, request: Request):
@@ -176,12 +166,12 @@ async def save_file(session_id: str, path: str, request: Request):
                 shutil.move(new_class_path, full_path)
                 return {"message": "Compilado y guardado correctamente"}
             else:
-                raise Exception("No se generó el .class compilado")
+                raise Exception("No se generó el .class")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error al compilar: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error compilando: {str(e)}")
 
     else:
-        raise HTTPException(status_code=400, detail="Tipo de archivo no editable")
+        raise HTTPException(status_code=400, detail="Tipo no editable")
 
 @app.get("/download/{session_id}")
 async def download_modified(session_id: str):
