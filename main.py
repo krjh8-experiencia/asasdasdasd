@@ -1,7 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import zipfile, os, uuid, subprocess, shutil, json
+import zipfile, os, uuid, subprocess, shutil
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -9,11 +9,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 TEMP = "temp"
 VINE = "vineflower-1.11.2.jar"
 
-TEXT_EXT = (".yml", ".yaml", ".txt", ".json", ".xml", ".properties", ".mf")
+TEXT_EXT = (".yml", ".yaml", ".json", ".txt", ".properties", ".xml", ".mf")
 
 os.makedirs(TEMP, exist_ok=True)
+SESSIONS = {}  # sid -> dict
 
-SESSIONS = {}  # session_id -> extract_dir
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -30,17 +30,28 @@ async def upload(file: UploadFile = File(...)):
     base = f"{TEMP}/{sid}"
     jar_path = f"{base}.jar"
     extract_dir = f"{base}_ext"
+    decomp_dir = f"{base}_java"
 
     os.makedirs(extract_dir)
+    os.makedirs(decomp_dir)
 
-    # streaming (NO RAM)
     with open(jar_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     with zipfile.ZipFile(jar_path) as jar:
         jar.extractall(extract_dir)
 
-    SESSIONS[sid] = extract_dir
+    # decompilar TODOS los .class
+    subprocess.run(
+        ["java", "-jar", VINE, extract_dir, decomp_dir],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    SESSIONS[sid] = {
+        "ext": extract_dir,
+        "java": decomp_dir
+    }
 
     return {"session": sid}
 
@@ -51,45 +62,85 @@ def tree(sid: str):
     if sid not in SESSIONS:
         raise HTTPException(404)
 
-    base = SESSIONS[sid]
-    tree = []
+    ext = SESSIONS[sid]["ext"]
+    files = []
 
-    for root, dirs, files in os.walk(base):
-        rel = root.replace(base, "").lstrip("/")
-        for d in dirs:
-            tree.append({"path": f"{rel}/{d}", "type": "dir"})
-        for f in files:
-            ext = os.path.splitext(f)[1]
-            tree.append({
-                "path": f"{rel}/{f}",
-                "type": "file",
-                "editable": ext in TEXT_EXT
+    for root, _, fs in os.walk(ext):
+        rel = root.replace(ext, "").lstrip("/")
+        for f in fs:
+            full = os.path.join(root, f)
+            e = os.path.splitext(f)[1].lower()
+
+            files.append({
+                "path": f"{rel}/{f}".lstrip("/"),
+                "editable": e in TEXT_EXT,
+                "type": "class" if e == ".class" else "text"
             })
 
-    return tree
+    return files
 
 
 # ================= READ =================
 @app.get("/read/{sid}")
-def read_file(sid: str, path: str):
-    base = SESSIONS.get(sid)
-    full = os.path.join(base, path)
+def read_file(
+    sid: str,
+    path: str = Query(...)
+):
+    if sid not in SESSIONS:
+        raise HTTPException(404)
+
+    ext_dir = SESSIONS[sid]["ext"]
+    java_dir = SESSIONS[sid]["java"]
+
+    full = os.path.join(ext_dir, path)
 
     if not os.path.isfile(full):
         raise HTTPException(404)
 
-    if not full.endswith(TEXT_EXT):
-        return {"binary": True}
+    ext = os.path.splitext(path)[1].lower()
 
-    with open(full, "r", encoding="utf-8", errors="ignore") as f:
-        return {"content": f.read()}
+    # TEXT FILES (YML ETC)
+    if ext in TEXT_EXT:
+        with open(full, "r", encoding="utf-8", errors="ignore") as f:
+            return {
+                "content": f.read(),
+                "editable": True
+            }
+
+    # CLASS → JAVA DECOMPILADO
+    if ext == ".class":
+        java_path = os.path.splitext(path)[0] + ".java"
+        java_full = os.path.join(java_dir, java_path)
+
+        if os.path.exists(java_full):
+            with open(java_full, "r", encoding="utf-8", errors="ignore") as f:
+                return {
+                    "content": f.read(),
+                    "editable": False
+                }
+
+        return {
+            "content": "// No se pudo decompilar esta clase",
+            "editable": False
+        }
+
+    return {
+        "content": "// Archivo binario",
+        "editable": False
+    }
 
 
 # ================= SAVE =================
 @app.post("/save/{sid}")
-def save_file(sid: str, path: str, body: dict):
-    base = SESSIONS.get(sid)
-    full = os.path.join(base, path)
+def save(
+    sid: str,
+    path: str = Query(...),
+    body: dict = None
+):
+    if sid not in SESSIONS:
+        raise HTTPException(404)
+
+    full = os.path.join(SESSIONS[sid]["ext"], path)
 
     if not full.endswith(TEXT_EXT):
         raise HTTPException(400, "No editable")
@@ -103,8 +154,11 @@ def save_file(sid: str, path: str, body: dict):
 # ================= DOWNLOAD =================
 @app.get("/download/{sid}")
 def download(sid: str):
-    base = SESSIONS.get(sid)
-    out = f"{TEMP}/{sid}_modified.jar"
+    if sid not in SESSIONS:
+        raise HTTPException(404)
+
+    base = SESSIONS[sid]["ext"]
+    out = f"{TEMP}/{sid}_MOD.jar"
 
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as jar:
         for root, _, files in os.walk(base):
