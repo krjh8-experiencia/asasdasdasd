@@ -1,61 +1,84 @@
 <!DOCTYPE html>
-<html lang="es">
+<html>
 <head>
 <meta charset="UTF-8">
-<title>JAR Decompiler</title>
+<title>Decompiler Editor</title>
 <style>
-body {
-  background:#0f0f0f;
-  color:#fff;
-  font-family: monospace;
-}
-button {
-  padding:10px;
-  background:#00ff88;
-  border:none;
-  cursor:pointer;
-}
-pre {
-  background:#111;
-  padding:10px;
-  overflow:auto;
-  max-height:300px;
-}
+body { display:flex; height:100vh; margin:0; font-family: monospace }
+#tree { width:30%; border-right:1px solid #ccc; overflow:auto; padding:10px }
+#editor { flex:1; display:flex; flex-direction:column }
+textarea { flex:1; width:100%; font-family: monospace }
+button { padding:10px }
+.file { cursor:pointer }
+.bin { color:#999 }
 </style>
 </head>
 <body>
 
-<h2>Subir JAR</h2>
+<div id="tree">
+<input type="file" id="file">
+<button onclick="upload()">Subir</button>
+<div id="files"></div>
+</div>
 
-<input type="file" id="file" accept=".jar">
-<button onclick="upload()">Decompilar</button>
-
-<div id="out"></div>
+<div id="editor">
+<div id="path"></div>
+<textarea id="content"></textarea>
+<button onclick="save()">Guardar</button>
+<button onclick="download()">Descargar JAR</button>
+</div>
 
 <script>
-async function upload() {
-  const f = document.getElementById("file").files[0];
-  if (!f) return alert("Subí un .jar");
+let SID = null;
+let CURRENT = null;
 
+function upload(){
+  const f = document.getElementById("file").files[0];
   const fd = new FormData();
   fd.append("file", f);
 
-  const r = await fetch("/upload", { method:"POST", body:fd });
-  const data = await r.json();
-
-  const out = document.getElementById("out");
-  out.innerHTML = "";
-
-  for (const file in data) {
-    out.innerHTML += `<h4>${file}</h4><pre>${escapeHtml(data[file])}</pre>`;
-  }
+  fetch("/upload",{method:"POST",body:fd})
+  .then(r=>r.json()).then(j=>{
+    SID=j.session;
+    loadTree();
+  });
 }
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g,"&amp;")
-    .replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;");
+function loadTree(){
+ fetch(`/tree/${SID}`).then(r=>r.json()).then(list=>{
+  const div=document.getElementById("files");
+  div.innerHTML="";
+  list.forEach(i=>{
+    if(i.type==="file"){
+      const d=document.createElement("div");
+      d.textContent=i.path;
+      d.className="file "+(i.editable?"":"bin");
+      if(i.editable) d.onclick=()=>openFile(i.path);
+      div.appendChild(d);
+    }
+  });
+ });
+}
+
+function openFile(p){
+ CURRENT=p;
+ document.getElementById("path").textContent=p;
+ fetch(`/read/${SID}?path=${encodeURIComponent(p)}`)
+ .then(r=>r.json()).then(j=>{
+  document.getElementById("content").value=j.content||"";
+ });
+}
+
+function save(){
+ fetch(`/save/${SID}?path=${encodeURIComponent(CURRENT)}`,{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({content:document.getElementById("content").value})
+ });
+}
+
+function download(){
+ window.location=`/download/${SID}`;
 }
 </script>
 
